@@ -1,0 +1,12 @@
+/target
+/.venv-py
+/models
+/daemon/target
+/daemon/.venv-py
+/daemon/models
+*.wav
+*.part
+*.log
+*.pyc
+__pycache__/
+.DS_Store

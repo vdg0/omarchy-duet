@@ -1,0 +1,26 @@
+GUION PARA GRABAR (leelo en voz alta, natural, sin apuro)
+
+Instrucciones:
+  - Hablá como si estuvieras en una reunion de trabajo.
+  - Hace una pausa de ~1 segundo entre frase y frase (eso es lo que el VAD
+    interpreta como "fin de turno").
+  - No hace falta que sea perfecto: quiero ver como se comporta con tu voz real,
+    tu acento y tus nombres propios.
+
+Frases (mas o menos, no hace falta literal):
+
+1. Hola, buen dia. Como venimos con el proyecto?
+
+2. El presupuesto es de cuarenta y cinco mil dolares y vence el treinta de noviembre.
+
+3. Necesito que revises el informe de Ana para el cliente de Montevideo.
+
+4. El servidor se cayo ayer porque se quedo sin memoria.
+
+5. Podemos mover la reunion del martes a las tres de la tarde?
+
+6. Perfecto, entonces te mando la actualizacion por correo manana a la manana.
+
+7. Gracias, nos hablamos pronto.
+
+(Total: unos 30-40 segundos)

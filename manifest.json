@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.vdg0.duet",
+  "name": "Duet",
+  "version": "0.3.0",
+  "author": "vdg0",
+  "description": "Local ES <-> EN voice interpreter for Meet and live conversations",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Duet",
+    "description": "Toggle the ES <-> EN interpreter",
+    "category": "Tools",
+    "allowMultiple": false
+  }
+}

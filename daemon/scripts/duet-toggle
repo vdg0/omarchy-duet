@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Start/stop the Duet daemon.
+set -u
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+BIN_DIR="$(dirname "$SELF")"
+RUNTIME="${DUET_RUNTIME:-$(cd "$BIN_DIR/.." && pwd)}"
+BIN="${DUET_BIN:-$RUNTIME/bin/duet}"
+MODEL="${DUET_MODEL:-$RUNTIME/models/ggml-base-q5_1.bin}"
+PYTHON="${DUET_PYTHON:-$RUNTIME/.venv-py/bin/python}"
+MT_SCRIPT="${DUET_MT_SCRIPT:-$RUNTIME/scripts/mt_server.py}"
+TTS_SCRIPT="${DUET_TTS_SCRIPT:-$RUNTIME/scripts/tts_server.py}"
+OUT_DIR="${DUET_OUT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/duet/out}"
+MIC="${DUET_MIC:-Built-in}"
+SPK="${DUET_SPK:-Built-in}"
+MODE="${DUET_MODE:-meet}"
+SRC_LANG="${DUET_SRC:-es}"
+DST_LANG="${DUET_DST:-en}"
+MIN_SPEECH="${DUET_MIN_SPEECH:-300}"
+GPU="${DUET_GPU:-auto}"
+SOCK="${XDG_RUNTIME_DIR:-/tmp}/duet.sock"
+PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/duet.pid"
+FIFO="${XDG_RUNTIME_DIR:-/tmp}/duet-mic.fifo"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/duet.log"
+
+usage() {
+  cat <<'EOF'
+Start/stop the Duet daemon. Without arguments it keeps the original
+behavior: stop it if it is running, otherwise start it.
+
+  duet-toggle [start|stop|toggle|status]
+      [--mode meet|live]
+      [--mic NAME] [--speaker NAME]
+      [--model PATH] [--from es] [--to en] [--min-speech MS]
+      [--gpu auto|on|off]
+
+The panel passes the selected configuration; the bar shortcut can still call
+it without arguments.
+EOF
+}
+
+CMD="toggle"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    start|stop|toggle|status) CMD="$1" ;;
+    --mode) shift; MODE="${1:-meet}" ;;
+    --mic) shift; MIC="${1:-Built-in}" ;;
+    --speaker) shift; SPK="${1:-Built-in}" ;;
+    --model) shift; MODEL="${1:-$MODEL}" ;;
+    --from|--de) shift; SRC_LANG="${1:-es}" ;;
+    --to|--a) shift; DST_LANG="${1:-en}" ;;
+    --min-speech) shift; MIN_SPEECH="${1:-300}" ;;
+    --gpu) shift; GPU="${1:-auto}" ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "duet-toggle: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+case "$MODE" in meet|live) ;; *) echo "duet-toggle: invalid mode: $MODE" >&2; exit 2 ;; esac
+case "$GPU" in auto|on|off) ;; *) echo "duet-toggle: invalid GPU mode: $GPU" >&2; exit 2 ;; esac
+
+mkdir -p "$(dirname "$LOG")" "$OUT_DIR"
+[ -d "$RUNTIME" ] && cd "$RUNTIME" || true
+
+daemon_pid() {
+  local p
+  if [ -f "$PIDFILE" ]; then
+    p=$(cat "$PIDFILE" 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "$p"; return 0; fi
+  fi
+  for p in $(pgrep -x duet 2>/dev/null); do
+    if tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -Eq '^--(meet|live)$'; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_running() {
+  [ -n "$(daemon_pid)" ]
+}
+
+send_cmd() {
+  local cmd="$1"
+  [ -S "$SOCK" ] || return 1
+  command -v socat >/dev/null 2>&1 || return 1
+  printf '%s\n' "$cmd" | timeout 2 socat UNIX-CONNECT:"$SOCK" STDIO >/dev/null 2>&1
+}
+
+cleanup_virtual() {
+  rm -f "$PIDFILE" "$SOCK" "$SOCK.pid" "$FIFO" 2>/dev/null
+  if command -v pactl >/dev/null 2>&1; then
+    for m in $(pactl list short modules 2>/dev/null | awk '/duet_mic|duet_meet/ {print $1}'); do
+      pactl unload-module "$m" 2>/dev/null
+    done
+  fi
+  # parec is a child of the daemon and captures Meet's monitor. If the daemon
+  # died abruptly it can stay alive and keep the sink busy.
+  pkill -f "parec --device=duet_meet.monitor" 2>/dev/null
+}
+
+stop_it() {
+  local pid
+  pid=$(daemon_pid)
+
+  # Graceful shutdown: the daemon leaves the loop and cleans up its nodes.
+  if [ -n "$pid" ]; then
+    send_cmd '{"cmd":"stop"}'
+    for _ in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+  fi
+
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+  fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill -INT "$pid" 2>/dev/null; sleep 0.5
+  fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null
+  fi
+  pkill -TERM -x duet 2>/dev/null
+  sleep 0.3
+  pkill -KILL -x duet 2>/dev/null
+  cleanup_virtual
+  [ "$CMD" = "stop" ] && echo "Duet stopped"
+  exit 0
+}
+
+start_it() {
+  if is_running; then
+    [ "$CMD" = "start" ] && echo "Duet is already running"
+    exit 0
+  fi
+  if [ ! -x "$BIN" ]; then
+    echo "duet-toggle: backend not found at $BIN" >&2
+    echo "duet-toggle: run install.sh from the plugin directory first" >&2
+    exit 1
+  fi
+  cleanup_virtual
+  # Do not let the log grow without bound.
+  if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+    tail -n 2000 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+  fi
+
+  local args=(--model "$MODEL" --python "$PYTHON"
+              --mt-script "$MT_SCRIPT" --tts-script "$TTS_SCRIPT"
+              --out-dir "$OUT_DIR"
+              --mic-device "$MIC" --speaker-device "$SPK"
+              --from "$SRC_LANG" --to "$DST_LANG" --min-speech-ms "$MIN_SPEECH"
+              --gpu "$GPU" --control-socket "$SOCK")
+  if [ "$MODE" = "live" ]; then
+    args+=(--live)
+  else
+    args+=(--meet)
+  fi
+
+  nohup "$BIN" "${args[@]}" >> "$LOG" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$PIDFILE"
+  disown 2>/dev/null
+
+  # The socket appears before the models finish loading. Waiting briefly lets
+  # the panel connect early without blocking startup.
+  for _ in $(seq 1 20); do
+    [ -S "$SOCK" ] && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PIDFILE"
+    echo "Duet failed to start; check $LOG" >&2
+    exit 1
+  fi
+  [ "$CMD" = "start" ] && echo "Duet starting"
+  exit 0
+}
+
+if [ "$CMD" = "status" ]; then
+  if [ -x "$RUNTIME/bin/duet-status" ]; then
+    exec "$RUNTIME/bin/duet-status"
+  fi
+  if is_running; then echo running; else echo stopped; fi
+fi
+
+case "$CMD" in
+  start) start_it ;;
+  stop)
+    if is_running; then
+      stop_it
+    else
+      cleanup_virtual
+      echo "Duet is already stopped"
+      exit 0
+    fi
+    ;;
+  toggle)
+    if is_running; then stop_it; else start_it; fi
+    ;;
+esac

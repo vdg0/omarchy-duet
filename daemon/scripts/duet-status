@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Real Duet state, as one word:
+#   running  = the daemon is ready (confirmed by the control socket, or by the
+#              virtual nodes in Meet mode as a fallback)
+#   starting = process is alive but still loading models/audio
+#   stopping = process is gone but virtual nodes remain
+#   stopped  = nothing
+FIFO="${XDG_RUNTIME_DIR:-/tmp}/duet-mic.fifo"
+SOCK="${XDG_RUNTIME_DIR:-/tmp}/duet.sock"
+
+proc_running() {
+  local pid
+  # `pgrep -x` also finds the ephemeral `--devices-json` process used by the
+  # panel to list devices. It is a daemon only if its command line asks for
+  # Meet or live mode.
+  for pid in $(pgrep -x duet 2>/dev/null); do
+    if tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -Eq '^--(meet|live)$'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+devices_present() {
+  [ -p "$FIFO" ] \
+    && pactl list short sources 2>/dev/null | awk '{print $2}' | grep -qx 'duet_mic_src' \
+    && pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx 'duet_meet'
+}
+
+# The daemon knows its exact state: the socket answers `starting` before loading
+# models and `running` once the pipeline is ready. It is the only way to tell
+# "ready" from "loading" in live mode, where there are no virtual nodes to check.
+socket_state() {
+  [ -S "$SOCK" ] || return 1
+  command -v socat >/dev/null 2>&1 || return 1
+  local out
+  out=$(printf '%s\n' '{"cmd":"status"}' | timeout 1 socat -t 0.1 - UNIX-CONNECT:"$SOCK" 2>/dev/null) || true
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out" \
+    | grep '"type":"status"' \
+    | grep -o '"state":"[a-z]*"' \
+    | head -1 \
+    | cut -d'"' -f4
+}
+
+if proc_running; then
+  if st=$(socket_state) && [ -n "$st" ]; then
+    case "$st" in
+      running|starting|stopping) echo "$st"; exit 0 ;;
+      *) echo starting; exit 0 ;;
+    esac
+  fi
+  # Fallback for Meet if the socket does not answer.
+  if devices_present; then echo running; else echo starting; fi
+else
+  if devices_present; then echo stopping; else echo stopped; fi
+fi
