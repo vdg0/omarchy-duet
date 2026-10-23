@@ -28,6 +28,15 @@ and its Python sidecars live under `daemon/`.
 - **Model manager:** the panel can download and verify models from a fixed
   catalog.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/panel-es.png" alt="Duet panel with the Spanish interface" width="360">
+  <img src="docs/screenshots/panel-en.png" alt="Duet panel with the English interface" width="360">
+</p>
+
+<p align="center"><em>The same panel in Spanish and English.</em></p>
+
 ## Requirements
 
 - Omarchy/Arch Linux with PipeWire (and the PulseAudio compatibility tools).
@@ -247,6 +256,7 @@ The workspace root is a virtual Cargo workspace; the daemon package is
 ├── install.sh              Runtime installer
 ├── LICENSE                 GPL-3.0-only
 ├── Cargo.toml              Workspace
+├── docs/screenshots/       Panel screenshots for this README
 └── daemon/
     ├── Cargo.toml
     ├── src/                Rust daemon
